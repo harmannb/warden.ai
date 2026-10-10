@@ -1,153 +1,43 @@
 # Warden components
 
-Warden is split into six components. Each one owns a slice of the
-[Warden Platform](https://app.party.build/issues/1) acceptance criteria,
-exposes a narrow interface to its neighbours, and can be built and tested on
-its own.
+Mirrors the **Build** section of [Warden Platform](https://app.party.build/issues/1). AC numbers refer to that issue's acceptance criteria, in order.
 
-```text
- Describe ──► Discover ──► Visualize ──► Run tests ──► Identify ──► Fix ──► Retest
-   [1]          [2]           [2]          [3]+[4]       [5]         [6]     [4]+[5]
-```
+## 1. Frontend — web app
+- **Scope:** React (Vite) client for the full journey: discovery chat and editable requirements, interactive architecture canvas with agent detail panel, live run feed, findings dashboard, fix review, and before/after comparison.
+- **Standards:** Persistent project tabs (Requirements, Architecture, Testing); empty, loading, setup-required, and error states; keyboard navigation; desktop and narrow layouts; status shown with icon and text, not colour alone.
+- **Covers:** AC1, AC3, AC4, AC12, AC15 (UI), AC11 (comparison view).
 
-| # | Component | Owns | Acceptance criteria |
-|---|-----------|------|---------------------|
-| 1 | Discovery Studio | Conversational onboarding and the editable requirements record | AC1, AC4 (entry to demo) |
-| 2 | Architecture Advisor | Agent/skill/tool recommendations and the interactive canvas | AC2, AC3, AC4 |
-| 3 | Support Sandbox | The executable customer-support system under test | AC5, AC8 (target side), AC10 (policy) |
-| 4 | Evaluation Team | Collaborating evaluators, orchestrator, assertions, run engine | AC6, AC7, AC8, AC12 (aggregation), AC14 |
-| 5 | Evidence Dashboard | Live run feed, findings, before/after comparison | AC11, AC12, AC15 |
-| 6 | Remediation Loop | Fix proposal, review/apply, versioning, retest, history, reset | AC9, AC10, AC11, AC13 |
+## 2. Backend API — application server
+- **Scope:** Fastify service exposing REST endpoints for projects, requirements, architectures, system versions, runs, findings, fixes, and demo reset, plus a Server-Sent Events stream per run.
+- **Rules:** Request validation; runs pinned to an immutable version at start; one active run per project; secrets never serialized to responses or logs.
+- **Covers:** AC13 (run/version binding), AC14 (no secrets in browser payloads), shared transport for all other ACs.
 
-AC16 (automated checks) and AC17 (docs, preview, visuals) apply to every
-component.
+## 3. AI Services — model gateway and advisors
+- **Scope:** Server-side Claude client with per-run call and time budgets, structured JSON output validation, and typed errors for missing credentials, provider failures, malformed output, and timeouts. Hosts the discovery interviewer, architecture recommender (agents, skills, tools, integrations, rationale, `executable` vs `proposed` tags), and remediation proposer.
+- **Covers:** AC1, AC2, AC9, AC14.
 
-## Shared core (plumbing, not a product component)
+## 4. Agent Sandbox — executable support system
+- **Scope:** Triage, knowledge, and account agents making live model calls with real handoffs; synthetic tools (ticket lookup, order lookup, help-centre search, an injectable failing tool) over synthetic customers, tickets, orders, and articles.
+- **Policy:** Versioned tool-boundary config. The baseline account tool trusts a model-supplied `customer_id`; the fixed version takes identity from the trusted session context and denies cross-customer reads.
+- **Output:** A full trace per conversation: turns, handoffs, tool calls, and the data actually returned.
+- **Covers:** AC5, AC8 (target side), AC10 (enforced policy).
 
-Small modules every component uses; built first, alongside component 3.
+## 5. Evaluation Engine — collaborating testing team
+- **Scope:** Unit, integration, user-acceptance, and security/reliability evaluators, each with its own role and model call, plus an orchestrator that plans, dispatches, and consolidates without authoring findings.
+- **Collaboration:** A findings board. The security evaluator publishes the cross-customer finding; the integration evaluator consumes it and runs a follow-up reproduction through the support team. Findings record `causedBy` links, and the report cites the resulting evidence.
+- **Verdicts:** Executable assertions decide concrete invariants (cross-customer denial, same-customer access, safe tool-failure fallback). Statuses are `passed | failed | errored | skipped | incomplete`, and only `passed` counts as a pass. Retests rerun the original exploit, the collaborator reproduction, and legitimate-support regressions.
+- **Covers:** AC6, AC7, AC8, AC11, AC12 (aggregation).
 
-- **Model gateway** — server-side Claude client. Reads credentials from the
-  environment only, enforces per-run call and time budgets, validates
-  structured JSON output, and maps missing keys, provider errors, malformed
-  output, and timeouts to typed errors (AC14).
-- **Store** — SQLite (Node's built-in `node:sqlite`) for projects,
-  requirements, architectures, system versions, runs, findings, and events
-  (AC13).
-- **Event stream** — Server-Sent Events channel per run; every event is
-  persisted before it is emitted, so a refresh replays the same history.
-
-## 1. Discovery Studio
-
-Turns a free-text project idea into a structured, user-approved requirements
-record.
-
-- Chat that asks contextual follow-ups about goals, workflows, success
-  criteria, data, integrations, and constraints.
-- Requirements panel the user can edit before requesting an architecture.
-- Banner explaining the executable boundary, with a **Try the support demo**
-  path that loads the bundled project.
-- **Outputs:** `Requirements { goals[], workflows[], successCriteria[], data[], integrations[], constraints[] }`
-  consumed by components 2 and 4 (acceptance tests trace to these).
-
-## 2. Architecture Advisor
-
-Recommends an agent team for the requirements and renders it as a graph.
-
-- Model-generated agents, each with responsibilities, skills, tools,
-  integration needs, and a rationale that cites requirement IDs.
-- Every tool and integration is tagged `executable` (configured in Warden)
-  or `proposed` (recommendation only), shown with a text label as well as
-  colour.
-- Canvas with directed handoff edges; selecting a node (mouse or keyboard)
-  opens a detail panel. Tabs keep project context across Requirements,
-  Architecture, and Testing.
-- **Outputs:** `Architecture { agents[], edges[] }` persisted per project.
-
-## 3. Support Sandbox
-
-The real, executable target system: three agents making live model calls
-over synthetic data.
-
-- **Triage agent** classifies a request and hands off; **Knowledge agent**
-  answers from a synthetic help-centre corpus; **Account agent** reads
-  tickets and orders through tools.
-- Synthetic fixtures: customers, tickets, orders, articles. Includes a
-  tool that can fail on demand for reliability tests.
-- **Versioned policy config.** The baseline account tool trusts a
-  `customer_id` argument supplied by the model (the intentional
-  vulnerability). The fixed version takes customer identity from the
-  trusted session context and denies cross-customer reads at the tool
-  boundary.
-- Every call returns a trace: agent turns, handoffs, tool calls, tool
-  results, and data the caller actually received.
-- **Interface:** `runConversation(versionId, session, messages) → Trace`.
-
-## 4. Evaluation Team
-
-Specialised AI testers that collaborate through a shared findings board.
-
-- **Evaluators** (each a distinct prompt and model call): unit,
-  integration, user-acceptance, and security/reliability.
-- **Orchestrator** plans the run, dispatches evaluators, and consolidates
-  the report. It never writes findings itself.
-- **Findings board.** Evaluators publish structured findings; peers
-  subscribe. The integration evaluator consumes the security finding and
-  generates a follow-up multi-agent reproduction. Each finding records its
-  `causedBy` parent so the collaboration chain is traceable.
-- **Executable assertions** decide verdicts for concrete invariants:
-  cross-customer data never reaches the caller, same-customer access
-  succeeds, a failed tool yields a safe fallback. A model's opinion cannot
-  pass an access-control check.
-- Verdicts: `passed | failed | errored | skipped | incomplete`. Only
-  `passed` counts as a pass.
-- **Interface:** `startRun(projectId, versionId) → runId`; streams events
-  through the shared core.
-
-## 5. Evidence Dashboard
-
-Shows what actually happened during a run.
-
-- Live collaboration feed: evaluator messages, finding hand-offs, and
-  expandable technical detail (inputs, tool calls, trace IDs).
-- Results grouped by category, each showing status (icon and text),
-  severity, affected agent/tool, expected vs observed, reproduction input,
-  evidence, and recommendation.
-- Before/after comparison of two runs on different versions, scenario by
-  scenario, linked to evidence.
-- Empty, loading, setup-required, and error states; responsive layout;
-  full keyboard navigation.
-
-## 6. Remediation Loop
-
-Turns a failed finding into a reviewed, versioned fix and a fresh retest.
-
-- **Fix proposal** generated from the observed failure: rationale, affected
-  behaviour, and a diff of the policy/config change.
-- **Apply** creates a new immutable system version; the baseline and its
-  findings are preserved. Runs are pinned to the version they tested, so
-  editing cannot change an in-flight run.
-- **Retest** reruns the original exploit, the collaborator's reproduction,
-  and legitimate-access and normal-support regression scenarios.
-- **History and reset:** run history survives refresh; **Reset demo**
-  returns the active system to the baseline as a new version label, so
-  older results remain accurately labelled.
+## 6. Data & Infrastructure
+- **Scope:** SQLite schema and repositories for projects, requirements, architectures, immutable system versions, runs, events, and findings. Apply-fix creates a new version; demo reset restores the baseline policy under a new version label without relabelling history.
+- **Ops:** Environment config (`ANTHROPIC_API_KEY`, model and budget variables, names only), dev and start scripts, `.party/preview.md`, and Party preview.
+- **Quality:** Vitest regressions for cross-customer denial, legitimate access, honest aggregation, and version-linked retests; README with startup, credentials, demo/reset walkthrough, and known limits; recorded live demo evidence.
+- **Covers:** AC10 (version retention), AC13, AC16, AC17.
 
 ## Build order
-
-Ordered by demo risk. The executable target and the real collaboration are
-the hardest parts and everything else depends on them.
-
-1. Shared core + **3 Support Sandbox**
-2. **4 Evaluation Team**
-3. **6 Remediation Loop**
-4. **5 Evidence Dashboard**
-5. **1 Discovery Studio**
-6. **2 Architecture Advisor**
-
-## Stack
-
-- Node 24 + TypeScript in one repository: a Fastify API server and a React
-  (Vite) client.
-- `@anthropic-ai/sdk` on the server only.
-- `node:sqlite` for persistence, so there is no native build step.
-- Vitest for assertion, aggregation, and versioning regressions.
+1. Data & Infrastructure + AI Services gateway
+2. Agent Sandbox
+3. Evaluation Engine
+4. Backend API
+5. Frontend
+6. AI Services advisors (discovery, recommendations, remediation) wired into the Frontend
